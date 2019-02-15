@@ -1,0 +1,153 @@
+#!/usr/bin/env python
+"""Measurements Module
+
+Author: Hunter Mellema
+Summary: Provides flexible measurement system for ASEN 6080 projects and
+homeworks
+
+"""
+
+# standard library imports
+from abc import ABC, abstractmethod
+import numpy as np
+
+# third party imports
+import ad
+from ad import adnumber
+from ad.admath import *
+from ad import jacobian
+
+from numba import jit
+
+class Msr(ABC):
+    """Defines a base measurement class
+
+    Args:
+        state_vec (list[adnumber]): list of parameters being estimated
+            in the state vector. Should be dual numbers (using the
+            adnumber package)
+        stn_id (int): A unique int identifier for the station that took
+            the measurement
+        time_tag (float): mod julian time at which this measurement was
+            taken
+        cov (np.array([float])): measurment covariance matrix
+    """
+    def __init__(self, state_vec, stn_vec, stn, time_tag, cov):
+        self.msr = self.calc_msr(state_vec, stn_vec)
+        self.time = time_tag
+        self.stn = stn
+        self.cov = cov
+
+
+    def __repr__(self):
+        string = """
+        ===================================
+        Measurement From Stn {} at time {}
+        ===================================
+        {}
+
+        """.format(self.stn.stn_id, self.time, self.msr)
+
+
+        return string
+
+    @abstractmethod
+    def calc_msr(self):
+        """Method that defines the equations that compute the
+        measurement
+
+        note: users MUST overwrite this method in child classes
+        """
+        pass
+
+    def add_white_noise(self, sigma_vec):
+        """ Adds gaussian noise to the measurement vector in place
+
+        Args:
+            sigma_vec (list(float)): list of std deviations of size
+                equal to the size of the measurement vector
+
+        Raises:
+            ValueError: The length of the sigma_vec is not equal to
+                the size of the measurement vector
+
+        """
+        if len(sigma_vec) < len(self.msr):
+            msg = "The length of the provided noise std deviation vector \
+                {} does not match the size of the measurement vector \
+                {}".format(len(sigma_vec),
+                            len(self.msr))
+            raise ValueError(msg)
+
+        mean = [0, 0]
+        cov_sigmas = np.diag([sigma**2 for sigma in sigma_vec])
+        noise = np.random.multivariate_normal(mean, cov_sigmas, 1)
+        self.msr = np.add(self.msr, noise)
+
+    @jit
+    def partials(self, state_vec, stn_pos):
+        """Computes the partial matrix with respect to the estimated
+        state vector
+
+        returns:
+            list(list): jacobian matrix of the measurement with
+                respect to the given state vector
+
+        """
+        return jacobian(self.calc_msr(state_vec, stn_pos),
+                        state_vec)
+
+
+class R3Msr(Msr):
+    """Represents a RANGE and RANGE RATE measurement taken by a
+    ground station
+
+    Args:
+        state_vec (list[adnumber]): list of parameters being estimated
+            in the state vector. Should be dual numbers (using the
+            adnumber package)
+        stn_id (int): A unique int identifier for the station that took
+            the measurement
+        time_tag (float): mod julian time at which this measurement was
+            taken
+        cov (np.array([float])): measurment covariance matrix
+
+    """
+    def __init__(self, state_vec, stn_vec, stn_id, time_tag, cov):
+        super(R3Msr, self).__init__(state_vec, stn_vec,
+                                    stn_id, time_tag, cov)
+
+    @jit
+    def calc_msr(self, state_vec, stn_vec):
+        """Calculates the instantaneous range and range rate measurement
+
+        Args:
+            state_vec (list[adnumber]): list of parameters being estimated
+                in the state vector. Should be dual numbers (using the
+                adnumber package)
+            stn_vec (list[float || adnumber]): state vector of the
+                station taking the measurement. Should be floats if
+                the station is not being estimated. If the stn state
+                is being estimated then adnumber with tagged names
+                should be used instead
+
+        Return:
+            list([1x2]): returns a 1 by 2 list of the range and
+                range rate measurements
+        """
+        rho = np.linalg.norm(state_vec[0:3] - stn_vec[0:3])
+        rho_dot = np.dot(state_vec[0:3] - stn_vec[0:3],
+                         state_vec[3:6] - stn_vec[3:6] )/ rho
+
+        return [rho, rho_dot]
+
+
+def sort_msrs(msr_list):
+    """ Sorts measurement list by time tag
+
+    Note: this function will sort the list in place, not return a new list
+
+    Args:
+        msr_list (list[filtering.MSR])
+    """
+    msr_list.sort(key=lambda x: x.time)

@@ -1,0 +1,36 @@
+#!/usr/bin/env python
+"""Reader Module
+
+Author: Hunter Mellema
+Summary: Provides a reader object for processing measurements from a file
+
+"""
+import pickle as pck
+from filtering.measurements import *
+from filtering.stations import *
+
+class ReaderR3(object):
+    """ Reader for processing Range and Range Rate measurments from a text file
+    """
+    def __init__(self, stns):
+        self.stns = {stn.stn_id:stn for stn in stns}
+        self.msr_list = []
+
+    def process(self, txt_file):
+        """
+        """
+        with open(txt_file) as f:
+            for line in f:
+                line = line.strip()
+                time, stn_id, ran, range_rate = line.split("    ")
+
+            self.msr_list.append(R3Msr(time, [ran, range_rate], self.stns[stn_id],
+                                       self.stns[stn_id].cov))
+
+
+    def pickle(self, file_name):
+        """ Dumps the measurment list to a pickled file to be quickly re-created
+
+        """
+        with open(file_name,'w') as f:
+            pickle.dump(self.msr_list, f)
