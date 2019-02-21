@@ -16,8 +16,12 @@ import ad
 from ad import adnumber
 from ad.admath import *
 from ad import jacobian
-
 from numba import jit
+
+# local imports
+from filtering.stations import get_stn_vel
+
+
 
 class Msr(ABC):
     """Defines a base measurement class
@@ -43,9 +47,7 @@ class Msr(ABC):
         """ Initializes a measurement object from a station state vector
 
         """
-        msr = self.calc_msr(state_vec, stn_vec)
-
-        return cls(time, msr, stn, cov)
+        return cls(time, None, stn, cov)
 
 
     def __repr__(self):
@@ -93,8 +95,8 @@ class Msr(ABC):
         noise = np.random.multivariate_normal(mean, cov_sigmas, 1)
         self.msr = np.add(self.msr, noise)
 
-    @jit
-    def partials(self, state_vec, stn_pos):
+
+    def partials(self, state_vec, stn_pos=None):
         """Computes the partial matrix with respect to the estimated
         state vector
 
@@ -103,8 +105,19 @@ class Msr(ABC):
                 respect to the given state vector
 
         """
-        return jacobian(self.calc_msr(state_vec, stn_pos),
-                        state_vec)
+        if stn_pos:
+            return jacobian(self.calc_msr(state_vec, stn_pos),
+                            state_vec)
+        else:
+            idx_start = 6 + 3 * self.stn.stn_rank
+            idx_end = idx_start + 3
+            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
+            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
+            stn_state = np.concatenate((state_vec[idx_start:idx_end],
+                                        stn_est_vel))
+
+            return jacobian(self.calc_msr(state_vec), state_vec)
+
 
 
 class R3Msr(Msr):
@@ -125,8 +138,8 @@ class R3Msr(Msr):
     def __init__(self, time_tag, msr, stn_id, cov):
         super(R3Msr, self).__init__(time_tag, msr, stn_id, cov)
 
-    @jit
-    def calc_msr(self, state_vec, stn_vec):
+
+    def calc_msr(self, state_vec, stn_state=np.array([])):
         """Calculates the instantaneous range and range rate measurement
 
         Args:
@@ -138,16 +151,130 @@ class R3Msr(Msr):
                 the station is not being estimated. If the stn state
                 is being estimated then adnumber with tagged names
                 should be used instead
+            time
 
         Return:
             list([1x2]): returns a 1 by 2 list of the range and
                 range rate measurements
         """
-        rho = np.linalg.norm(state_vec[0:3] - stn_vec[0:3])
-        rho_dot = np.dot(state_vec[0:3] - stn_vec[0:3],
-                         state_vec[3:6] - stn_vec[3:6] )/ rho
+        if stn_state.any():
+            stn_vec = stn_state
+        else:
+            idx_start = 6 + 3 * self.stn.stn_rank
+            idx_end = idx_start + 3
+            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
+            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
+            stn_vec = np.concatenate((state_vec[idx_start:idx_end],
+                                        stn_est_vel))
+
+
+        rho = np.linalg.norm(np.subtract(state_vec[0:3], stn_vec[0:3]))
+        rho_dot = np.dot(np.subtract(state_vec[0:3], stn_vec[0:3]),
+                         np.subtract(state_vec[3:6], stn_vec[3:6]))/ rho
 
         return [rho, rho_dot]
+
+class Range(Msr):
+    """Represents a RANGE measurement taken by a
+    ground station
+
+    Args:
+        msr (list[float]): measurement taken by the station
+        stn_id (int): A unique int identifier for the station that took
+            the measurement
+        time_tag (float): mod julian time at which this measurement was
+            taken
+        cov (np.array([float])): measurment covariance matrix
+
+    """
+    def __init__(self, time_tag, msr, stn_id, cov):
+        super(Range, self).__init__(time_tag, msr, stn_id, cov)
+
+
+    def calc_msr(self, state_vec, stn_state=np.array([])):
+        """Calculates the instantaneous range and range rate measurement
+
+        Args:
+            state_vec (list[adnumber]): list of parameters being estimated
+                in the state vector. Should be dual numbers (using the
+                adnumber package)
+            stn_vec (list[float || adnumber]): state vector of the
+                station taking the measurement. Should be floats if
+                the station is not being estimated. If the stn state
+                is being estimated then adnumber with tagged names
+                should be used instead
+            time
+
+        Return:
+            list([1x2]): returns a 1 by 2 list of the range and
+                range rate measurements
+        """
+        if stn_state.any():
+            stn_vec = stn_state
+        else:
+            idx_start = 6 + 3 * self.stn.stn_rank
+            idx_end = idx_start + 3
+            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
+            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
+            stn_vec = np.concatenate((state_vec[idx_start:idx_end],
+                                        stn_est_vel))
+
+
+        rho = np.linalg.norm(np.subtract(state_vec[0:3], stn_vec[0:3]))
+
+        return [rho]
+
+class RangeRate(Msr):
+    """Represents a RANGE RATE measurement taken by a
+    ground station
+
+    Args:
+        msr (list[float]): measurement taken by the station
+        stn_id (int): A unique int identifier for the station that took
+            the measurement
+        time_tag (float): mod julian time at which this measurement was
+            taken
+        cov (np.array([float])): measurment covariance matrix
+
+    """
+    def __init__(self, time_tag, msr, stn_id, cov):
+        super(RangeRate, self).__init__(time_tag, msr, stn_id, cov)
+
+
+    def calc_msr(self, state_vec, stn_state=np.array([])):
+        """Calculates the instantaneous range and range rate measurement
+
+        Args:
+            state_vec (list[adnumber]): list of parameters being estimated
+                in the state vector. Should be dual numbers (using the
+                adnumber package)
+            stn_vec (list[float || adnumber]): state vector of the
+                station taking the measurement. Should be floats if
+                the station is not being estimated. If the stn state
+                is being estimated then adnumber with tagged names
+                should be used instead
+            time
+
+        Return:
+            list([1x2]): returns a 1 by 2 list of the range and
+                range rate measurements
+        """
+        if stn_state.any():
+            stn_vec = stn_state
+        else:
+            idx_start = 6 + 3 * self.stn.stn_rank
+            idx_end = idx_start + 3
+            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
+            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
+            stn_vec = np.concatenate((state_vec[idx_start:idx_end],
+                                        stn_est_vel))
+
+
+        rho = np.linalg.norm(np.subtract(state_vec[0:3], stn_vec[0:3]))
+        rho_dot = np.dot(np.subtract(state_vec[0:3], stn_vec[0:3]),
+                         np.subtract(state_vec[3:6], stn_vec[3:6]))/ rho
+
+        return [rho_dot]
 
 
 def sort_msrs(msr_list):

@@ -13,6 +13,7 @@ from numba import jit
 
 ### CONSTANTS ####
 from filtering import R_E, MU, J2, J3, RHO_0, H_0, R_0, MASS, C_D, A_SAT
+from filtering.stations import get_stn_vel
 
 ### Propagator
 def propagate_sc_traj(istates, force_model, times, dt=0.01):
@@ -45,22 +46,30 @@ class ForceModel(object):
 
 
     def ode(self, t, state_vec):
-        """
+        """ Differential Equation for State vector
         """
         xddot, yddot, zddot = map(sum, zip(*[fxn(state_vec) for
                                              fxn in self.force_list]))
+        #### FIX: ####
+        # Stations should be adaptively added, not hard coded
+        stn_1_vel = get_stn_vel(t, state_vec[9:12])
+        stn_2_vel = get_stn_vel(t, state_vec[12:15])
+        stn_3_vel = get_stn_vel(t, state_vec[15:18])
 
         out_state = [state_vec[3], state_vec[4], state_vec[5],
-                     xddot, yddot, zddot]
+                     xddot, yddot, zddot,
+                     0, 0, 0, # constants
+                     *stn_1_vel, *stn_2_vel, *stn_3_vel
+        ]
 
-        for i, _ in enumerate(state_vec[6:]):
-            out_state.append(0)
+        #### END FIX ####
 
         return out_state
 
 
 # Forces you can add to the force model
-@jit
+
+##### GRAVITATIONAL FORCES #######
 def point_mass(state_vec):
         """Calculates the x, y, z accelerations due to point
             mass gravity model
@@ -72,14 +81,12 @@ def point_mass(state_vec):
 
         return  [-mu * coord / r**3 for coord in state_vec[0:3]]
 
-@jit
 def set_mu(state_vec):
     """ """
     mu = state_vec[6] if 6 < len(state_vec) else MU
 
     return mu
 
-@jit
 def j2_accel(state_vec):
         """Calculates the J2 x, y, z accelerations
 
@@ -87,20 +94,19 @@ def j2_accel(state_vec):
         j2 = set_j2(state_vec)
         x, y, z = state_vec[0:3]
         r = norm(state_vec[0:3])
-        xddot = - 3 * j2 * x / (2 * r**5) * (1 - 5 * z**2 / r**2)
-        yddot = - 3 * j2 * y / (2 * r**5) * (1 - 5 * z**2 / r**2)
-        zddot = - 3 * j2 * z / (2 * r**5) * (3 - 5 * z**2 / r**2)
+        xddot =  -3 * j2 * x / (2 * r**5) * (1 - 5 * z**2 / r**2)
+        yddot =  -3 * j2 * y / (2 * r**5) * (1 - 5 * z**2 / r**2)
+        zddot =  -3 * j2 * z / (2 * r**5) * (3 - 5 * z**2 / r**2)
 
         return [xddot, yddot, zddot]
 
-@jit
+
 def set_j2(state_vec):
     """"""
     j2 = state_vec[7] if 7 < len(state_vec) else J2
 
     return j2
 
-@jit
 def j3_accel(state_vec, mu=MU, j2=J3, j3=J3):
         """Calculates the J3 x, y, z accelerations
 
@@ -116,14 +122,13 @@ def j3_accel(state_vec, mu=MU, j2=J3, j3=J3):
 
         return [xddot, yddot, zddot]
 
-@jit
 def set_j3(state_vec):
     """ """
     j3 = state[8] if 8 < len(state_vec) else J3
 
     return j3
 
-@jit
+###### DRAG MODELS ############
 def drag(state_vec):
     """ Calculates drag based on a simple ballistic model and exponential atmospheric model
 
@@ -134,17 +139,16 @@ def drag(state_vec):
     r = norm(state_vec[0:3]) * 1000
     rho = RHO_0 * exp(-(r - R_0) / H_0)
     f_drag_mag = -1 / 2 * rho * (cd * A_SAT / MASS) * norm(state_vec[3:6])
-
     return [f_drag_mag * coord for coord in state_vec[3:6]]
 
-@jit
+
 def set_CD(state_vec):
     """ """
-    cd = state[8] if 8 < len(state_vec) else C_D
+    cd = state_vec[8] if 8 < len(state_vec) else C_D
 
     return cd
 
-@jit
+
 def norm(vec):
     """ Computes the 2 norm of a vector or vector slice """
     return sqrt(sum([i**2 for i in vec]))

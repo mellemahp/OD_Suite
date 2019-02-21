@@ -13,6 +13,7 @@ from filtering.measurements import *
 from filtering.propagator import *
 
 # third party
+import scipy as sp
 from numba import jit
 
 class KalmanFilter(object):
@@ -36,7 +37,7 @@ class KalmanFilter(object):
     """
     __metaclass__ = ABCMeta
 
-    def __init__(self, istate, msrs, apriori, force_model):
+    def __init__(self, istate, msrs, apriori, force_model, stns=[]):
         self.istate = istate
         self.prop_state_list = [istate]
         self.estimates = [istate]
@@ -47,6 +48,7 @@ class KalmanFilter(object):
         self.residuals = [0]
         self.times = [0]
         self.len_state = len(istate)
+        self.stns_estimate = stns
 
     def __repr__(self):
         string="""
@@ -80,7 +82,7 @@ class KalmanFilter(object):
         pass
 
 
-    def _compute_stm(self, time, phi=np.array([])):
+    def _compute_stm(self, time):
         """Computes the STM by propagating it using an ode solver from
         the current time to the new time of the measurement
 
@@ -91,13 +93,13 @@ class KalmanFilter(object):
            np.ndarray [n x n], np.ndarray [n x 1]
 
         """
-        if not phi.any():
-            phi = np.identity(self.len_state)
+        phi = np.identity(self.len_state)
         z_m = np.concatenate((self.prop_state_list[-1], phi.flatten()))
 
         sol = solve_ivp(self._phi_ode,
                         [self.times[-1], time],
-                        z_m, method="LSODA")
+                        z_m, method="LSODA"
+        )
 
         z_p = [row[-1] for row in sol.y]
         phi_p = np.reshape(z_p[self.len_state:],
@@ -108,7 +110,7 @@ class KalmanFilter(object):
 
         return phi_p, prop_state
 
-    @jit
+
     def _phi_ode(self, t, z):
         """Defines the STM ode equation. This is used only for STM propagation
 
@@ -120,7 +122,6 @@ class KalmanFilter(object):
            np.ndarray [1 x (n^2 + n)]
 
         """
-
         # prep states and phi_matrix
         state = z[0:self.len_state]
 
@@ -129,7 +130,7 @@ class KalmanFilter(object):
                                               self.len_state))
 
         # find the accelerations and jacobian
-        state_deriv, a_matrix = self._derivatives(state)
+        state_deriv, a_matrix = self._derivatives(t, state)
 
         # compute the derivative of the STM and repackage
         phid = np.matmul(a_matrix, phi)
@@ -138,8 +139,8 @@ class KalmanFilter(object):
 
         return z_out
 
-    @jit
-    def _derivatives(self, state):
+
+    def _derivatives(self, t,  state):
         """ Computes the jacobian and state derivatives
 
         Args:
@@ -147,12 +148,13 @@ class KalmanFilter(object):
 
         """
         ad_state = make_ad(state)
-        state_deriv = self.force_model.ode(0, ad_state)
+        state_deriv = self.force_model.ode(t, ad_state)
+
         a_matrix = jacobian(state_deriv, ad_state)
 
         return state_deriv, a_matrix
 
-    @jit
+
     def _msr_resid(self, msr, state_prop):
         """ Computes the measurement residual and measurement partials
 
@@ -165,15 +167,17 @@ class KalmanFilter(object):
 
         """
         # get estimated station position and estimated msr
-        stn_est = msr.stn.get_state(msr.time)
-        est_msr = R3Msr(state_prop, stn_est, None, None, None).msr
+        dummymsr = msr.__class__(msr.time, None, msr.stn, None)
+        stn_state_est = msr.stn.get_state(msr.time)
+        est_msr = dummymsr.calc_msr(state_prop, stn_state_est)
 
-        y_i = np.subtract(msr.msr, est_msr)
-        h_tilde = msr.partials(make_ad(state_prop), stn_est)
+        # compute residuals and partials matrix
+        y_i = np.subtract(msr.msr, est_msr).reshape(len(msr.msr), 1)
+        h_tilde = msr.partials(make_ad(state_prop))
 
         return (y_i, h_tilde)
 
-    @jit
+
     def _calc_k_gain(self, cov_m, h_tilde, R_cov):
         """Calculates the Kalman Gain
 
@@ -211,8 +215,7 @@ class CKFilter(KalmanFilter):
         super().__init__(istate, msrs, apriori, force_model)
 
         self.pert_vec = [pert_vec]
-
-
+        self.innovation = [0]
 
     def run(self):
         """Runs the filter on the currently loaded measurement list
@@ -227,7 +230,6 @@ class CKFilter(KalmanFilter):
             cov_m = np.matmul(phi_p, np.matmul(self.cov_list[-1],
                                                np.transpose(phi_p)))
 
-
             # compute observation deviation, obs_state matrix
             y_i, h_tilde = self._msr_resid(msr, state_prop)
 
@@ -239,7 +241,9 @@ class CKFilter(KalmanFilter):
                                                      h_tilde,
                                                      pert_m,
                                                      k_gain,
-                                                     cov_m)
+                                                     cov_m,
+                                                     msr.cov
+            )
 
             # update the state lists
             self.residuals.append(y_i)
@@ -249,9 +253,10 @@ class CKFilter(KalmanFilter):
             self.pert_vec.append(pert_p)
             self.times.append(msr.time)
 
-    @jit
-    def _measurement_update(self, y_i, h_tilde, pert_m, k_gain, cov_m):
-        """ Performs the measurement update step of the EKF
+
+    def _measurement_update(self, y_i, h_tilde, pert_m, k_gain, cov_m, msr_cov):
+        """ Performs the measurement update step of the CKF using the
+        Joseph covariance update
 
         Args:
             y_i (np.ndarray): measurement residuals matrix
@@ -266,14 +271,14 @@ class CKFilter(KalmanFilter):
             (np.ndarray [n x n], np.ndarray [n x 1])
 
         """
-        innovation = np.subtract(np.transpose(y_i),
-                                 np.matmul(h_tilde, pert_m))
+        innovation = np.subtract(y_i, np.matmul(h_tilde, pert_m))
+        self.innovation.append(innovation)
         pert_p = np.add(pert_m, np.matmul(k_gain, innovation))
-
         L = np.subtract(np.identity(self.len_state),
                         np.matmul(k_gain, h_tilde))
-
-        cov_p = np.matmul(L, cov_m)
+        Z = np.matmul(k_gain, np.matmul(msr_cov, np.transpose(k_gain)))
+        Q = np.matmul(L, np.matmul(cov_m, np.transpose(L)))
+        cov_p = np.add(Q, Z)
 
         return (cov_p, pert_p)
 
@@ -325,6 +330,7 @@ class EKFilter(KalmanFilter):
             self.cov_list.append(cov_p)
             self.times.append(msr.time)
 
+
     def _measurement_update(self, y_i, h_tilde, k_gain, cov_m, state_prop):
         """ Performs the measurement update step of the EKF
 
@@ -341,7 +347,7 @@ class EKFilter(KalmanFilter):
             np.ndarray [n x n], np.ndarray [1 x n]
 
         """
-        x_update = np.matmul(k_gain, np.transpose(y_i))
+        x_update = np.matmul(k_gain, y_i)
 
         L = np.subtract(np.identity(len(self.istate)),
                         np.matmul(k_gain, h_tilde))
@@ -369,14 +375,15 @@ class BatchFilter(KalmanFilter):
         super().__init__(np.array(istate), msrs, apriori, force_model)
 
         self.fisher_info = [np.linalg.inv(apriori)]
-        self.N = [np.matmul(self.fisher_info, pert_vec)]
-        self.phis = [np.identity(self.len_state)]
+        self.N = [np.matmul(self.fisher_info[-1], pert_vec)]
+        # describes the total mapping from t0 => t for each time step
+        self.phi_map = [np.identity(self.len_state)]
         self.pert_vec = pert_vec
         self.iters = 0
         self.cov_batch = None
-        self.times_batch = [0]
 
-    def run(self, threshold=1e-3, max_iters=100):
+
+    def run(self, threshold=1e-3, max_iters=10):
         """ Runs the filter on the currently loaded measurement list
 
         Args:
@@ -386,29 +393,43 @@ class BatchFilter(KalmanFilter):
         """
         for msr in self.msrs:
             # find state transition matrix and propagate state
-            phi_p, state_prop = self._compute_stm(msr.time, self.phis[-1])
+            phi_p, state_prop = self._compute_stm(msr.time)
+
+            # calculates the total mapping from t0 to the measurement time
+            phi_map = np.matmul(phi_p, self.phi_map[-1])
 
             # compute observation deviation, obs_state matrix
             y_i, h_tilde = self._msr_resid(msr, state_prop)
 
             # update information and N
-            self._update_info_and_n(y_i, h_tilde, phi_p, msr.cov)
+            self._update_info_and_n(y_i, h_tilde, phi_map, msr.cov)
 
             # add everything to the appropriate lists
             self.prop_state_list.append(state_prop)
             self.estimates.append(state_prop)
-            self.phis.append(phi_p)
-            self.times_batch.append(msr.time)
+            self.phi_map.append(phi_map)
+            self.times.append(msr.time)
 
         # compute correction
         self.iters += 1
-        x_hat_0 = np.linalg.solve(self.fisher_info[-1], self.N[-1])[0]
+
+        return None
+
+        # use cholesky factorization for better stability
+        chol = sp.linalg.cholesky(self.fisher_info[-1])
+        input_tuple = (chol, False)
+
+        x_hat_0 = sp.linalg.cho_solve(input_tuple, self.N[-1])
+
+        # Pseudo-inverse method
+        #x_hat_0 = np.matmul(np.linalg.pinv(self.fisher_info[-1]), self.N[-1])
+
+        print(x_hat_0)
 
         # check for convergence
-        if np.linalg.norm(x_hat_0) <= threshold:
+        if np.linalg.norm(x_hat_0[0:3]) <= threshold:
             print("Batch filter converged in {} Iterations".format(self.iters))
-            self.cov_batch = np.linalg.inv(self.fisher_info[-1])
-            self.times = self.times_batch
+            self.cov_batch = map(np.linalg.inv, self.fisher_info)
 
         elif self.iters >= max_iters:
             raise StopIteration("max_iters: {} reached without convergence".format(max_iters))
@@ -416,7 +437,7 @@ class BatchFilter(KalmanFilter):
         else:
             self._reset_batch(x_hat_0)
 
-            r
+
     def _reset_batch(self, x_hat_0):
         """Resets parameters of the batch filter for the next iteration
 
@@ -426,20 +447,20 @@ class BatchFilter(KalmanFilter):
         """
         # reset everything and try again
         updated_istate = np.add(self.prop_state_list[0], np.transpose(x_hat_0))
+
         # fixes a strange bug wher the size of updated istate was changing
         updated_istate = np.resize(updated_istate, (1, self.len_state))[0]
 
         self.prop_state_list = [updated_istate]
         self.fisher_info = [self.fisher_info[0]]
         self.pert_vec = np.subtract(self.pert_vec, x_hat_0)
-        self.N = [np.matmul(self.apriori, self.pert_vec)]
-        self.phis = [self.phis[0]]
+        self.N = [np.matmul(self.fisher_info[-1], self.pert_vec)]
+        self.phi_map = [self.phi_map[0]]
         self.estimates = [updated_istate]
-        self.times_batch = [0]
+        self.times = [0]
         self.run()
 
 
-    @jit
     def _update_info_and_n(self, y_i, h_tilde, phi_p, msr_cov):
         """Update the information and N matrix as specified in "Accumulate
             current observation" block of Born book flow chart (pg 196)
@@ -447,7 +468,7 @@ class BatchFilter(KalmanFilter):
         Args:
             y_i (np.ndarray): vector of measurement residuals
             h_tilde (np.ndarray): matrix partials matrix evaluated at nominal trajectory
-            phi_p (np.ndarrray [n x n]): state transition matrix from last time to the
+            phi_p (np.ndarrray [n x n]): state transition matrix from initial time to the
                 current measurement time
             msr_cov (np.ndarray): measurement covariance matrix to use
 
@@ -458,7 +479,7 @@ class BatchFilter(KalmanFilter):
         L = np.matmul(np.transpose(h_i), np.matmul(msr_cov_inv, h_i)) #computational placeholder
         self.fisher_info.append(np.add(self.fisher_info[-1], L))
         # update N
-        M = np.matmul(np.transpose(h_i), np.matmul(msr_cov_inv, np.transpose(y_i))) #computation placeholder
+        M = np.matmul(np.transpose(h_i), np.matmul(msr_cov_inv, y_i)) #computation placeholder
         self.N.append(np.add(self.N[-1], M))
 
 @jit

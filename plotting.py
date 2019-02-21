@@ -142,7 +142,7 @@ def plot_range_and_rr(stn_list):
             ax.set_ylabel(ylabels[i])
 
     axs[1].set_xlabel("Time")
-    axs[1].legend([stn.stn_id for stn in stn_list], loc='lower right')
+    axs[0].legend([stn.stn_id for stn in stn_list], loc='lower right')
 
 
 def plot_state_errors(kfilter, times, sc_states, batch=False):
@@ -179,3 +179,104 @@ def plot_state_errors(kfilter, times, sc_states, batch=False):
     plt.title("State Errors")
     plt.xlabel("Time (sec)")
     plt.ylabel("Distance (km)")
+
+def plot_pos_vel_rel(kf, title):
+    """Plots a graph of the position and velocity relative states"""
+    x_pert = [state[0] for state in kf.pert_vec]
+    y_pert = [state[1] for state in kf.pert_vec]
+    z_pert = [state[2] for state in kf.pert_vec]
+    dx_pert = [state[3] for state in kf.pert_vec]
+    dy_pert = [state[4] for state in kf.pert_vec]
+    dz_pert = [state[5] for state in kf.pert_vec]
+
+    fig, axs = plt.subplots(1,2)
+
+    axs[0].set_title("{} Position Relative States".format(title))
+    axs[0].scatter(kf.times, x_pert, label="X_perturbation")
+    axs[0].scatter(kf.times, y_pert, label="Y_perturbation")
+    axs[0].scatter(kf.times, z_pert, label="Z_perturbation")
+    axs[0].legend()
+    axs[0].set_xlabel("Times")
+    axs[0].set_ylabel("Positions (km)")
+
+    axs[1].set_title("{} Velocity Relative States".format(title))
+    axs[1].scatter(kf.times, dx_pert, label="DX_perturbation")
+    axs[1].scatter(kf.times, dy_pert, label="DY_perturbation")
+    axs[1].scatter(kf.times, dz_pert, label="DZ_perturbation")
+    axs[1].legend()
+    axs[1].set_xlabel("Times")
+    axs[1].set_ylabel("Velocties (km/sec)")
+
+    return axs
+
+
+def plot_pos_vel_est(kf, title):
+    """Plots a graph of the position and velocity estimated"""
+    x_states = [state[0] for state in kf.estimates]
+    y_states = [state[1] for state in kf.estimates]
+    z_states = [state[2] for state in kf.estimates]
+    dx_states = [state[3] for state in kf.estimates]
+    dy_states = [state[4] for state in kf.estimates]
+    dz_states = [state[5] for state in kf.estimates]
+
+    fig, axs = plt.subplots(1,2)
+
+    axs[0].set_title("{} Position Estimated States".format(title))
+    axs[0].scatter(kf.times, x_states, label="X est")
+    axs[0].scatter(kf.times, y_states, label="Y est")
+    axs[0].scatter(kf.times, z_states, label="Z est")
+    axs[0].legend()
+    axs[0].set_xlabel("Times")
+    axs[0].set_ylabel("Positions (km)")
+
+    axs[1].set_title("{} Velocity Estimated States".format(title))
+    axs[1].scatter(kf.times, dx_states, label="DX est")
+    axs[1].scatter(kf.times, dy_states, label="DY_est")
+    axs[1].scatter(kf.times, dz_states, label="DZ_est")
+    axs[1].legend()
+    axs[1].set_xlabel("Times")
+    axs[1].set_ylabel("Velocties (km/sec)")
+
+    return axs
+
+
+def plot_residuals(kf, title):
+    """Plots measurement residuals for a filter"""
+    resid_1 = [state[0] for state in kf.residuals[1:]]
+    resid_2 = [state[1] for state in kf.residuals[1:]]
+
+    fig, axs = plt.subplots(2,1)
+
+    axs[0].set_title("Range and Range rate residuals {}".format(title))
+    axs[0].scatter(kf.times[1:], resid_1, label="Range Residual")
+    axs[0].set_ylabel("Range (km)")
+    axs[1].scatter(kf.times[1:], resid_2, label="Range Rate Residual")
+    axs[1].set_ylabel("Range Rate (km)")
+
+    axs[0].legend()
+    axs[1].legend()
+    plt.xlabel("Times (sec)")
+
+def plot_rms(kf, title):
+    """ Plots RMS covariance error for a filter """
+    fig, axs = plt.subplots(1, 2)
+    fig.subplots_adjust(hspace=.5)
+
+    pos_rms = [rms(cov.diagonal()[0:3])for cov in kf.cov_list]
+    vel_rms = [rms(cov.diagonal()[3:6]) for cov in kf.cov_list]
+
+    axs[0].plot(kf.times, pos_rms)
+    axs[0].set_title("{} RMS Position error".format(title))
+    axs[0].set_ylabel("RMS error (km)")
+    axs[0].set_xlabel("Times (sec)")
+
+    axs[1].plot(kf.times, vel_rms)
+    axs[1].set_title("{} RMS Velocity error".format(title))
+    axs[1].set_ylabel("RMS error (km/sec)")
+    axs[1].set_xlabel("Times (sec)")
+
+    return axs
+
+def rms(arr):
+    """ Calculates the RMS error of a covariance matrix"""
+    return np.sqrt(1 / len(arr) * np.sum(arr))
