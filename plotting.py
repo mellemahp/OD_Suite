@@ -277,6 +277,85 @@ def plot_rms(kf, title):
 
     return axs
 
+def plot_postfit_residuals(ckf, title,  sigma=0, axs=None):
+    """Plots measurement residuals for a filter"""
+    resid_1 = [state[0] for state in ckf.innovation[4:]]
+    resid_2 = [state[1] for state in ckf.innovation[4:]]
+
+    if axs is None:
+        fig, axs = plt.subplots(2,1)
+        axs[0].set_title("Range and Range rate residuals {}".format(title))
+        axs[0].set_ylabel("Range (km)")
+        axs[1].set_ylabel("Range Rate (km)")
+        plt.xlabel("Times (sec)")
+
+    axs[0].scatter(ckf.times[4:], resid_1, label="Sigma = {0:.2f}".format(sigma))
+    axs[1].scatter(ckf.times[4:], resid_2, label="Sigma = {0:.2f}".format(sigma))
+    axs[0].legend()
+    axs[1].legend()
+
+    return axs
+
+
 def rms(arr):
     """ Calculates the RMS error of a covariance matrix"""
     return np.sqrt(1 / len(arr) * np.sum(arr))
+
+def compute_errors(relevant_states, estimates):
+    x_err = [(state_sc[0] - state_est[0])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+    y_err = [(state_sc[1] - state_est[1])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+    z_err = [(state_sc[2] - state_est[2])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+    dx_err = [(state_sc[3] - state_est[3])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+    dy_err = [(state_sc[4] - state_est[4])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+    dz_err = [(state_sc[5] - state_est[5])/100 for state_sc, state_est in
+             zip(relevant_states[2:], estimates[1:])]
+
+    return x_err, y_err, z_err, dx_err, dy_err, dz_err
+
+def get_relevant_state(kfilter, times, sc_states):
+    indices = [0]
+    for i, time in enumerate(times):
+        if time in kfilter.times:
+            indices.append(i)
+
+    relevant_states = itemgetter(*indices)(sc_states)
+    return relevant_states
+
+
+def plot_inertial_errors(ckf_snc, relevant_states, estimates):
+    times = ckf_snc.times[2:]
+    x_err, y_err, z_err, dx_err, dy_err, dz_err = compute_errors(
+        relevant_states, estimates
+    )
+
+    pos_errs = [x_err, y_err, z_err]
+    vel_errs = [dx_err, dy_err, dz_err]
+    pos_titles = ['X Error', 'Y Error', 'Z Error']
+    vel_titles = ['DX Error', 'DY Error', 'DZ Error']
+    fig, axs = plt.subplots(2, 3)
+
+    for idx, err in enumerate(pos_errs):
+        axs[0,idx].plot(times, err)
+        axs[0,idx].set_title(pos_titles[idx])
+        axs[0,idx].set_ylim([-100, 100])
+
+    for idx, err in enumerate(vel_errs):
+        axs[1,idx].plot(times, err)
+        axs[1,idx].set_title(vel_titles[idx])
+
+    for idx in range(3):
+        cov = [np.sqrt(c[idx,idx]) for c in ckf_snc.smoothed_cov[:-2][::-1]]
+        cov_m = [-1 * a for a in cov]
+        axs[0,idx].plot(times, cov, color='r', linestyle='--')
+        axs[0,idx].plot(times, cov_m, color='r', linestyle='--')
+
+    for idx in range(3):
+        cov = [np.sqrt(c[idx+3,idx+3]) for c in ckf_snc.smoothed_cov[:-2][::-1]]
+        cov_m = [-1 * a for a in cov]
+        axs[1,idx].plot(times, cov, color='r', linestyle='--')
+        axs[1,idx].plot(times, cov_m, color='r', linestyle='--')

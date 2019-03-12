@@ -10,10 +10,15 @@ from math import sqrt, exp
 
 # third party imports
 from numba import jit
+import numpy as np
 
 ### CONSTANTS ####
 from filtering import R_E, MU, J2, J3, RHO_0, H_0, R_0, MASS, C_D, A_SAT
 from filtering.stations import get_stn_vel
+
+# ADDED FOR HWK 3
+tau = 2 * np.pi * np.sqrt(10000**3 / MU)
+BETA = 1 / tau
 
 ### Propagator
 def propagate_sc_traj(istates, force_model, times, dt=0.01):
@@ -50,19 +55,14 @@ class ForceModel(object):
         """
         xddot, yddot, zddot = map(sum, zip(*[fxn(state_vec) for
                                              fxn in self.force_list]))
-        #### FIX: ####
-        # Stations should be adaptively added, not hard coded
-        stn_1_vel = get_stn_vel(t, state_vec[9:12])
-        stn_2_vel = get_stn_vel(t, state_vec[12:15])
-        stn_3_vel = get_stn_vel(t, state_vec[15:18])
 
         out_state = [state_vec[3], state_vec[4], state_vec[5],
-                     xddot, yddot, zddot,
-                     0, 0, 0, # constants
-                     *stn_1_vel, *stn_2_vel, *stn_3_vel
-        ]
+                     xddot, yddot, zddot]
 
-        #### END FIX ####
+        if len(state_vec) > 6:
+            out_state.append(-BETA * state_vec[6])
+            out_state.append(-BETA * state_vec[7])
+            out_state.append(-BETA * state_vec[8])
 
         return out_state
 
@@ -147,6 +147,10 @@ def set_CD(state_vec):
     cd = state_vec[8] if 8 < len(state_vec) else C_D
 
     return cd
+
+def DCM(state_vec):
+    """ Adds dynamic model compensation to the state """
+    return [state_vec[6], state_vec[7], state_vec[8]]
 
 
 def norm(vec):

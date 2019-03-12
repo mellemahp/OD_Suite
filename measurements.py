@@ -19,8 +19,7 @@ from ad import jacobian
 from numba import jit
 
 # local imports
-from filtering.stations import get_stn_vel
-
+#from filtering.stations import get_stn_vel
 
 
 class Msr(ABC):
@@ -47,7 +46,9 @@ class Msr(ABC):
         """ Initializes a measurement object from a station state vector
 
         """
-        return cls(time, None, stn, cov)
+        msr = cls.calc_msr(cls, state_vec, stn_vec)
+
+        return cls(time, msr, stn, cov)
 
 
     def __repr__(self):
@@ -96,7 +97,7 @@ class Msr(ABC):
         self.msr = np.add(self.msr, noise)
 
 
-    def partials(self, state_vec, stn_pos=None):
+    def partials(self, state_vec, stn_pos):
         """Computes the partial matrix with respect to the estimated
         state vector
 
@@ -105,19 +106,9 @@ class Msr(ABC):
                 respect to the given state vector
 
         """
-        if stn_pos:
-            return jacobian(self.calc_msr(state_vec, stn_pos),
-                            state_vec)
-        else:
-            idx_start = 6 + 3 * self.stn.stn_rank
-            idx_end = idx_start + 3
-            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
-            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
-            stn_state = np.concatenate((state_vec[idx_start:idx_end],
-                                        stn_est_vel))
 
-            return jacobian(self.calc_msr(state_vec), state_vec)
-
+        return jacobian(self.calc_msr(state_vec, stn_pos),
+                        state_vec)
 
 
 class R3Msr(Msr):
@@ -139,7 +130,7 @@ class R3Msr(Msr):
         super(R3Msr, self).__init__(time_tag, msr, stn_id, cov)
 
 
-    def calc_msr(self, state_vec, stn_state=np.array([])):
+    def calc_msr(self, state_vec, stn_state):
         """Calculates the instantaneous range and range rate measurement
 
         Args:
@@ -157,17 +148,8 @@ class R3Msr(Msr):
             list([1x2]): returns a 1 by 2 list of the range and
                 range rate measurements
         """
-        if stn_state.any():
-            stn_vec = stn_state
-        else:
-            idx_start = 6 + 3 * self.stn.stn_rank
-            idx_end = idx_start + 3
-            stn_est_pos_no_ad = [x.real for x in state_vec[idx_start:idx_end]]
-            stn_est_vel = get_stn_vel(self.time, stn_est_pos_no_ad)
-            stn_vec = np.concatenate((state_vec[idx_start:idx_end],
-                                        stn_est_vel))
-
-
+        # if stn_state.any():
+        stn_vec = stn_state
         rho = np.linalg.norm(np.subtract(state_vec[0:3], stn_vec[0:3]))
         rho_dot = np.dot(np.subtract(state_vec[0:3], stn_vec[0:3]),
                          np.subtract(state_vec[3:6], stn_vec[3:6]))/ rho

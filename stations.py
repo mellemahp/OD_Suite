@@ -6,8 +6,8 @@ Summary: Defines measuring stations for simulation for ASEN 6080 homeworks and p
 
 """
 from numba import jit
-
-from filtering.measurements import *
+import numpy as np
+from filtering.measurements import R3Msr
 from filtering import THETA_0, W_E, R_E
 
 
@@ -58,8 +58,6 @@ class EarthStn(object):
         ==================================================
 
         """.format(self.stn_id,
-                   self.latitude,
-                   self.longitude,
                    len(self.msrs),
                    self.el_mask,
                    self.cov
@@ -85,11 +83,11 @@ class EarthStn(object):
                                                               time)
 
             if flag:
-                self.msrs.append(R3Msr(sc_states[idx],
-                                       stn_state,
-                                       self,
-                                       time,
-                                       self.cov))
+                self.msrs.append(R3Msr.from_stn(time,
+                                                sc_states[idx],
+                                                stn_state,
+                                                self,
+                                                self.cov))
                 self.elevations.append(el_angle)
                 self.stn_states.append(stn_state)
 
