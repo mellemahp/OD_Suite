@@ -302,18 +302,18 @@ def rms(arr):
     return np.sqrt(1 / len(arr) * np.sum(arr))
 
 def compute_errors(relevant_states, estimates):
-    x_err = [(state_sc[0] - state_est[0])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
-    y_err = [(state_sc[1] - state_est[1])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
-    z_err = [(state_sc[2] - state_est[2])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
-    dx_err = [(state_sc[3] - state_est[3])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
-    dy_err = [(state_sc[4] - state_est[4])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
-    dz_err = [(state_sc[5] - state_est[5])/100 for state_sc, state_est in
-             zip(relevant_states[2:], estimates[1:])]
+    x_err = [(state_sc[0] - state_est[0]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
+    y_err = [(state_sc[1] - state_est[1]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
+    z_err = [(state_sc[2] - state_est[2]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
+    dx_err = [(state_sc[3] - state_est[3]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
+    dy_err = [(state_sc[4] - state_est[4]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
+    dz_err = [(state_sc[5] - state_est[5]) for state_sc, state_est in
+             zip(relevant_states[1:], estimates[1:])]
 
     return x_err, y_err, z_err, dx_err, dy_err, dz_err
 

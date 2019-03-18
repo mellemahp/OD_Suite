@@ -20,6 +20,9 @@ import scipy.integrate as integrate
 import scipy
 import ad
 
+# parallel stuff
+from multiprocessing.pool import ThreadPool
+
 class KalmanFilter(object):
     """ Defines a base class for all Kalman Filter type orbit determination filters
     Examples of child classes include:
@@ -1060,3 +1063,202 @@ def householder(A, n=None, m=None):
             A_mat[i, k] = 0.0
 
     return A_mat
+
+
+class UKFilter(KalmanFilter):
+    """Creates an Unscented Kalman Filter
+
+    Args:
+        istate (list[floats]): initials state vector. Will define the size of the state for
+            all measurement processing
+        msrs (list[filtering.MSR]): list of measurements to process
+        apriori (np.ndarray): apriori covariance matrix. Must have size n x n
+        force_model (filtering.ForceModel): force model to use for propagation and estimation
+        pert_vec (list[float]): intitial perturbation vector guess
+        alpha (float): scaling factor for sigma point selection (default=1e-3)
+        beta (float): scaling factor for weighting of sigma points (default=2)
+        kappa (float): scaling factor for sigam point selection (default=0)
+
+    """
+    POOL = ThreadPool(13)
+
+    def __init__(self, istate, msrs, apriori, force_model, alpha=1e-3, beta=2, kappa=0,
+                 process_noise=None):
+        super().__init__(istate, msrs, apriori, force_model)
+        self.alpha = alpha
+        self.beta = beta
+        self.kappa = kappa
+        self.lam = alpha**2 * (kappa + self.len_state) - self.len_state
+        self.gamma = np.sqrt(self.len_state + self.lam)
+        w_m, w_c = self._get_weights()
+        self.weights_sigs = w_m
+        self.weights_covs = w_c
+        self.process_noise = process_noise
+
+    def _get_weights(self):
+        """Finds the weights for the UKF
+
+        Returns:
+            (list[float], list[floats])
+
+        """
+        weights_sigs = [self.lam / (self.lam + self.len_state)]
+        weights_cov = [weights_sigs[0] + (1 - self.alpha**2 + self.beta)]
+
+        other_weights = 1 / (2 * (self.lam + self.len_state))
+
+        for _ in range(1, 2 * self.len_state + 1):
+            weights_sigs.append(other_weights)
+            weights_cov.append(other_weights)
+
+        return weights_sigs, weights_cov
+
+
+    def run(self):
+        """Runs the filter on the currently loaded measurement list
+
+        """
+        for msr in self.msrs:
+            # generate sigma points
+            sigma_points = self._find_sigma_pts(self.estimates[-1])
+
+            # propagate sigma points
+            sigma_points_prop = self.parallel_int(msr.time, sigma_points)
+
+            # time update
+            x_p = np.sum([w * x for w, x in zip(self.weights_sigs, sigma_points_prop)],
+                         axis=0)
+
+            P_i_m = np.sum([w * np.outer((x - x_p), (x - x_p)) for w, x in
+                            zip(self.weights_covs, sigma_points_prop)],
+                            axis=0)
+
+            if self.process_noise is not None:
+                P_i_m = P_i_m + self._compute_SNC(msr.time)
+
+            est_msrs = [self._msr_est(msr, x) for x in sigma_points_prop]
+
+            y_hat_m = np.sum([w * est for w, est in zip(self.weights_sigs,
+                                                        est_msrs)], axis=0)
+
+            # measurement update
+            p_yy_m = np.sum([w * np.outer((est - y_hat_m), (est - y_hat_m))
+                             for w, est in zip(self.weights_covs, est_msrs)],
+                            axis=0) + msr.cov
+            p_xy_m = np.sum([w * np.outer((x - x_p), (est - y_hat_m)) for w, x, est in
+                             zip(self.weights_covs, sigma_points_prop, est_msrs)],
+                            axis=0)
+
+            k_i = p_xy_m @ np.linalg.inv(p_yy_m)
+
+            resid = np.reshape(msr.msr, (len(msr.msr), 1)) - y_hat_m
+            x_i_p = x_p + (k_i @ resid).T
+            P_i_p = P_i_m - k_i @ (p_yy_m) @ k_i.T
+
+
+            x_i_p = np.reshape(x_i_p, (1, self.len_state))[0]
+            # store all relevant values
+            self.residuals.append(resid)
+            self.prop_state_list.append(x_p)
+            self.estimates.append(x_i_p)
+            self.cov_list.append(P_i_p)
+            self.times.append(msr.time)
+
+
+    def _find_sigma_pts(self, mean):
+        """Samples sigma points
+
+        Args:
+            mean (np.array [1 x n]): mean estimated state
+            cov_sqrt (np.array [n x n]) sqrt of covariance matrix (scaled by function above)
+
+        """
+        cov_sqrt = self._get_mod_cov_sqrt(self.cov_list[-1])
+        mean_mat = np.array([mean for _ in range(self.len_state * 2 + 1)])
+        mod_mat = np.block([[np.zeros((1, self.len_state))],
+                            [cov_sqrt],
+                            [-cov_sqrt]])
+        sigs_mat = np.add(mean_mat, mod_mat)
+
+        return sigs_mat
+
+
+    def _get_mod_cov_sqrt(self, cov_mat):
+        """Finds the scaled principal axis sqrt in
+        Basically computes to principle axes of the uncertainty ellipsoid
+
+        """
+        S = scipy.linalg.sqrtm(cov_mat)
+
+        if np.iscomplexobj(S):
+            raise ValueError("Square root of covariance is complex: \n {}".format(S))
+
+        return self.gamma * S
+
+
+    def parallel_int(self, t_f, sigma_points):
+        """Maps the integration step to multiple processes
+
+        Args:
+            t_f (float): time to integrate to in seconds
+            sigma_points (list[list[floats]]): list of 5 sigma points
+
+        """
+        #inputs = [(self.times[-1], t_f, sigma) for sigma in sigma_points]
+        #outputs = self.POOL.starmap(self.integration_eq, inputs)
+        outputs = []
+        for sigma in sigma_points:
+            outputs.append(self.integration_eq(self.times[-1], t_f, sigma))
+
+        return outputs
+
+
+    def integration_eq(self, t_0, t_f, X_0):
+        """ Integrates a sigma point from on time to another
+
+        Args:
+            t_0 (float): start time in seconds (should be time of msr)
+            t_f (float): time to integrate to
+            X_0 (list[float]): intitial state to integrate
+
+        """
+        sol = solve_ivp(self.force_model.ode,
+                        [t_0, t_f],
+                        X_0,
+                        method="LSODA",
+                        atol=1e-13, rtol=1e-13
+        )
+        X_f = sol.y[:,-1]
+
+        return X_f
+
+
+    def _msr_est(self, msr, state_prop):
+        """ Computes the measurement residual and measurement partials
+
+        Args:
+            msr (filtering.MSR): measurement to use for computations
+            state_prop (np.ndarray): nominal state vector propagated to the measurement time
+
+        Returns:
+            (np.ndarray [1 x len(MSR.msr)], np.ndarray [len(MSR.msr) x n])
+
+        """
+        # get estimated station position and estimated msr
+        dummymsr = msr.__class__(msr.time, None, msr.stn, None)
+        stn_state_est = msr.stn.get_state(msr.time)
+        est_msr = dummymsr.calc_msr(state_prop, stn_state_est)
+
+        return np.reshape(est_msr, (len(est_msr),1))
+
+    def _compute_SNC(self, next_time):
+        """Computes the SNC covariance matrix update """
+        dt = self.times[-1] - next_time
+        Q_k = np.zeros((self.len_state, self.len_state))
+        Q_k[0,0], Q_k[1,1], Q_k[2,2] = [1 / 3 * dt**3] * 3
+        Q_k[3,3], Q_k[4,4], Q_k[5,5] = [1 / 2 * dt**2] * 3
+        Q_k[0,3], Q_k[1,4], Q_k[2,5], Q_k[3,0], Q_k[4,1], Q_k[5,2] = [dt] * 6
+
+        Q_k = self.process_noise**2 * Q_k
+
+        return Q_k
