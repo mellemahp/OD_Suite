@@ -14,7 +14,7 @@ THETA_0 = 0
 ### Drag model constants ###
 H_0 = 88667.0 # reference height (m)
 R_0 = 700000.0 + R_E * 1000 # reference radius (m)
-RHO_0 = 3.614e-13 # kg / m^3
+RHO_0 = 0.0003614 # kg / km^3
 C_D = 2.0 # unitless
-A_SAT = 3.0 # cross sectional area of satellite
+A_SAT = 3e-6 # cross sectional area of satellite (km^2)
 MASS = 970 # kg

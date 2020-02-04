@@ -5,9 +5,13 @@ Author: Hunter Mellema
 Summary: Defines measuring stations for simulation for ASEN 6080 homeworks and projects
 
 """
-
-from filtering.measurements import *
+from numba import jit
+import numpy as np
+from filtering.measurements import R3Msr
 from filtering import THETA_0, W_E, R_E
+
+
+EARTH_ANG_VEL = np.array([[0], [0], [W_E]])
 
 # Measurement Generation Functions
 class EarthStn(object):
@@ -23,7 +27,7 @@ class EarthStn(object):
             every measurement taken by this station
 
     """
-    def __init__(self, stn_id, pos_ecef, el_mask, cov=[]):
+    def __init__(self, stn_id, pos_ecef, el_mask, cov=[], stn_rank=None):
         self.stn_id = stn_id
         self.pos = pos_ecef
         self.el_mask = el_mask
@@ -31,6 +35,7 @@ class EarthStn(object):
         self.elevations = []
         self.cov = cov
         self.stn_states = []
+        self.stn_rank = stn_rank
 
     @classmethod
     def from_lat_long(cls, stn_id, latitude, longitude, el_mask, cov=[]):
@@ -53,16 +58,14 @@ class EarthStn(object):
         ==================================================
 
         """.format(self.stn_id,
-                   self.latitude,
-                   self.longitude,
                    len(self.msrs),
                    self.el_mask,
                    self.cov
         )
 
-        return string
+        return map(sum, zip(*[fxn(state_vec) for fxn in self.force_list]))
 
-
+    @jit
     def gen_r3_measurements(self, times, sc_states):
         """ Generates, range and range rate measurements for this station given a spacecraft
         trajectory
@@ -80,11 +83,11 @@ class EarthStn(object):
                                                               time)
 
             if flag:
-                self.msrs.append(R3Msr(sc_states[idx],
-                                       stn_state,
-                                       self,
-                                       time,
-                                       self.cov))
+                self.msrs.append(R3Msr.from_stn(time,
+                                                sc_states[idx],
+                                                stn_state,
+                                                self,
+                                                self.cov))
                 self.elevations.append(el_angle)
                 self.stn_states.append(stn_state)
 
@@ -127,13 +130,12 @@ class EarthStn(object):
         """
         rot_mat = ecef_to_eci(time)
         pos_ecef = np.matmul(rot_mat, self.pos)
-        ang_vel = np.array([[0], [0], [W_E]])
-        vel_ecef = np.matmul(rot_mat,
-                             np.transpose(np.cross(np.transpose(ang_vel),
-                                                   np.transpose(self.pos))))
-
-        return np.transpose(np.concatenate((pos_ecef, vel_ecef)))[0]
-
+        vel_ecef = np.cross(np.transpose(EARTH_ANG_VEL),
+                        np.transpose(self.pos))
+        vel_eci = np.dot(rot_mat, np.transpose(vel_ecef))
+        state = np.concatenate((np.transpose(pos_ecef)[0],
+                                np.transpose(vel_eci)[0]))
+        return state
 
 
 def lat_long_to_ecef(latitude, longitude):
@@ -159,7 +161,6 @@ def lat_long_to_ecef(latitude, longitude):
 
     return pos_ecef
 
-
 def ecef_to_eci(time, theta_0=THETA_0):
     """Calculates rotation matrix to ECI at a given time
 
@@ -178,3 +179,14 @@ def ecef_to_eci(time, theta_0=THETA_0):
                        [0, 0, 1]])
 
     return rot_mat
+
+
+def get_stn_vel(time, pos):
+    """ Given a stn state in ECI, returns its velocity
+
+    """
+    rot_mat = ecef_to_eci(time)
+    vel_ecef = np.cross(np.transpose(EARTH_ANG_VEL),
+                        np.transpose(pos))
+
+    return vel_ecef.tolist()[0]
