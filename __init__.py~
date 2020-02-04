@@ -1,9 +1,0 @@
-# Constants
-R_E = 6378.1363 # radius of the earth (km)
-MU = 398600; # gravitational parameter of earth
-J2 = 0.0010826269 # j2 gravity field coefficient
-J3 = -0.0000025323 # j3 gravity field coefficient
-
-import numpy as np
-W_E = 2 * np.pi / (24 * 3600)# rotation rate of the earth
-THETA_0 = np.deg2rad(122)
